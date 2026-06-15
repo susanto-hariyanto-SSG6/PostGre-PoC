@@ -95,6 +95,17 @@ def _pg_clock_in(student_id, lat_list):
     try:
         conn = psycopg2.connect(PG_CONFIG)
         cur  = conn.cursor()
+        # Simulate login screen: aggregate student + class info + attendance history
+        cur.execute("""
+            SELECT s.id, s.name, c.name AS class_name, COUNT(a.id) AS total_checkins
+            FROM students s
+            JOIN classes c ON s.class_id = c.id
+            LEFT JOIN attendance a ON a.student_id = s.id
+            WHERE s.id = %s
+            GROUP BY s.id, s.name, c.name
+        """, (student_id,))
+        cur.fetchone()
+        # Record clock-in
         cur.execute("INSERT INTO attendance (student_id, status) VALUES (%s, 'present')", (student_id,))
         conn.commit(); cur.close(); conn.close()
         lat_list.append((time.perf_counter() - t) * 1000)
@@ -217,6 +228,17 @@ def _mssql_clock_in(student_id, lat_list):
     try:
         conn = _mssql_conn()
         cur  = conn.cursor()
+        # Simulate login screen: aggregate student + class info + attendance history
+        cur.execute("""
+            SELECT s.id, s.name, c.name AS class_name, COUNT(a.id) AS total_checkins
+            FROM students s
+            JOIN classes c ON s.class_id = c.id
+            LEFT JOIN attendance a ON a.student_id = s.id
+            WHERE s.id = %s
+            GROUP BY s.id, s.name, c.name
+        """, (student_id,))
+        cur.fetchone()
+        # Record clock-in
         cur.execute("INSERT INTO attendance (student_id, status) VALUES (%s, 'present')", (student_id,))
         conn.commit()
         lat_list.append((time.perf_counter() - t) * 1000)
