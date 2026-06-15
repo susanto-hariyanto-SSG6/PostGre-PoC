@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PG vs MSSQL — Performance PoC</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f0f2f5; padding: 24px; }
+    h1 { color: #2c3e50; margin-bottom: 20px; font-size: 20px; }
+
+    /* Status grid */
+    .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .status-card { background: white; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .db-header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+    .db-header h2 { font-size: 15px; color: #2c3e50; }
+    .stat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+    .stat-label { color: #888; width: 52px; flex-shrink: 0; }
+    .stat-value { font-weight: bold; color: #2c3e50; min-width: 48px; }
+    .bar-wrap { flex: 1; background: #eee; border-radius: 4px; height: 7px; overflow: hidden; }
+    .bar-fill  { height: 7px; border-radius: 4px; transition: width 0.6s ease; width: 0%; }
+    .bar-cpu  { background: #3498db; }
+    .bar-mem  { background: #9b59b6; }
+
+    /* Badges */
+    .badge { padding: 3px 10px; border-radius: 20px; font-weight: bold; font-size: 12px; }
+    .badge-on   { background: #27ae60; color: white; }
+    .badge-off  { background: #e74c3c; color: white; }
+    .badge-wait { background: #f39c12; color: white; }
+
+    /* Controls card */
+    .controls-card { background: white; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .concurrency-group { display: flex; align-items: center; gap: 6px; background: #f4f6f8; border: 1px solid #ddd; border-radius: 6px; padding: 6px 12px; }
+    .concurrency-group label { font-size: 13px; color: #555; }
+    .concurrency-group input { width: 60px; border: 1px solid #ccc; border-radius: 4px; padding: 4px 8px; font-size: 13px; text-align: center; }
+    button { padding: 9px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px; transition: opacity 0.2s; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-run    { background: #3498db; color: white; }
+    .btn-inject { background: #f39c12; color: white; }
+    .btn-index  { background: #27ae60; color: white; }
+    .btn-remove { background: #e74c3c; color: white; }
+    .note { font-size: 12px; color: #aaa; margin-left: 4px; }
+
+    /* Section header row */
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .btn-schema { padding: 5px 14px; background: #8e44ad; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold; }
+    .btn-schema:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Terminal */
+    .section { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
+    .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #888; margin-bottom: 10px; }
+    .terminal { background: #1a1a2e; color: #00e676; font-family: "Courier New", monospace; font-size: 13px; padding: 14px 16px; border-radius: 6px; height: 220px; overflow-y: auto; }
+    .log-line { line-height: 1.6; white-space: pre-wrap; }
+    .log-line.pg    { color: #74b9ff; }
+    .log-line.mssql { color: #fd79a8; }
+    .log-line.error { color: #ff5252; }
+    .log-sep  { color: #333; border-top: 1px solid #333; margin: 4px 0; }
+    .terminal-cursor { display: inline-block; width: 8px; height: 14px; background: #00e676; vertical-align: middle; animation: blink 1s step-end infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* Chart */
+    .chart-img { width: 100%; border: 1px solid #e0e0e0; border-radius: 6px; }
+    .no-chart { background: #f8f9fa; border: 2px dashed #ddd; border-radius: 6px; height: 120px; display: flex; align-items: center; justify-content: center; color: #aaa; }
+    /* Performance chart grid */
+    .chart-grid-2x2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .chart-panel { background: #f8f9fa; border-radius: 8px; padding: 14px; }
+    .chart-panel-title { font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+</head>
+<body>
+<h1>🗄️ PostgreSQL vs SQL Server — Attendance Performance Simulation</h1>
+
+<!-- Status Grid -->
+<div class="status-grid">
+
+  <!-- PostgreSQL -->
+  <div class="status-card">
+    <div class="db-header">
+      <span style="font-size:20px">🐘</span>
+      <h2>PostgreSQL 15</h2>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Records</span>
+      <span id="pg-count" class="stat-value">{{ pg_row_count }}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Index</span>
+      <span id="pg-badge" class="badge {{ 'badge-on' if pg_index_applied else 'badge-off' }}">
+        ● {{ 'ON' if pg_index_applied else 'OFF' }}
+      </span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">CPU</span>
+      <span id="pg-cpu-val" class="stat-value">–</span>
+      <div class="bar-wrap"><div id="pg-cpu-bar" class="bar-fill bar-cpu"></div></div>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">RAM</span>
+      <span id="pg-mem-val" class="stat-value">–</span>
+      <div class="bar-wrap"><div id="pg-mem-bar" class="bar-fill bar-mem"></div></div>
+    </div>
+  </div>
+
+  <!-- SQL Server -->
+  <div class="status-card">
+    <div class="db-header">
+      <span style="font-size:20px">🪟</span>
+      <h2>SQL Server 2022</h2>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Records</span>
+      <span id="mssql-count" class="stat-value">{{ mssql_row_count }}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Index</span>
+      <span id="mssql-badge" class="badge {{ 'badge-on' if mssql_index_applied else ('badge-wait' if not mssql_ready else 'badge-off') }}">
+        {{ '● ON' if mssql_index_applied else ('⏳ Connecting...' if not mssql_ready else '● OFF') }}
+      </span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">CPU</span>
+      <span id="mssql-cpu-val" class="stat-value">–</span>
+      <div class="bar-wrap"><div id="mssql-cpu-bar" class="bar-fill bar-cpu"></div></div>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">RAM</span>
+      <span id="mssql-mem-val" class="stat-value">–</span>
+      <div class="bar-wrap"><div id="mssql-mem-bar" class="bar-fill bar-mem"></div></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Merged Controls -->
+<div class="controls-card">
+  <div class="controls">
+    <div class="concurrency-group">
+      <label>Concurrency</label>
+      <input type="number" id="threads" value="50" min="1" max="300">
+    </div>
+    <button id="btn-run"    class="btn-run"    onclick="runTest()">▶ Run Test</button>
+    <button id="btn-inject" class="btn-inject" onclick="injectHistory()">⚡ Inject 5k History</button>
+    <button id="btn-apply"  class="btn-index"  onclick="applyIndex()">✅ Apply Index</button>
+    <button id="btn-remove" class="btn-remove" onclick="removeIndex()">🗑 Remove Index</button>
+    <span class="note">Runs on both DBs simultaneously</span>
+  </div>
+</div>
+
+<!-- Log Terminal -->
+<div class="section">
+  <div class="section-title">Log Output <span id="running-indicator" style="display:none; color:#f39c12">● running</span></div>
+  <div class="terminal" id="terminal">
+    <span id="cursor" class="terminal-cursor" style="display:none"></span>
+  </div>
+</div>
+
+<!-- Performance Chart (JS / Chart.js) -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Performance Analysis
+      <span id="chart-run-info" style="font-size:11px; color:#aaa; text-transform:none; letter-spacing:0"></span>
+    </span>
+    <button class="btn-schema" onclick="renderCharts()">&#8635; Refresh</button>
+  </div>
+  <div class="chart-grid-2x2">
+    <div class="chart-panel">
+      <div class="chart-panel-title" style="color:#e74c3c">PostgreSQL — Before Index</div>
+      <canvas id="chart-pg-before"></canvas>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-panel-title" style="color:#27ae60">PostgreSQL — After Index</div>
+      <canvas id="chart-pg-after"></canvas>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-panel-title" style="color:#c0392b">SQL Server — Before Index</div>
+      <canvas id="chart-mssql-before"></canvas>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-panel-title" style="color:#2980b9">SQL Server — After Index</div>
+      <canvas id="chart-mssql-after"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Schema Diagram (bottom) -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Schema &amp; Table Info</span>
+    <button id="btn-schema" class="btn-schema" onclick="refreshSchema()">&#8635; Refresh Schema</button>
+  </div>
+  <div id="no-schema-msg" class="no-chart" style="height:80px">Click &#8635; Refresh Schema to generate diagram</div>
+  <img id="schema-img" class="chart-img" src="" alt="" style="display:none">
+</div>
+
+<script>
+  // ── State ─────────────────────────────────────────────────────────────────
+  const st = {
+    pg:    { indexApplied: {{ 'true' if pg_index_applied else 'false' }}, rowCount: {{ pg_row_count }} },
+    mssql: { indexApplied: {{ 'true' if mssql_index_applied else 'false' }}, rowCount: {{ mssql_row_count }}, ready: {{ 'true' if mssql_ready else 'false' }} },
+    running: false,
+  };
+
+  let lastLogCount = 0;
+  let logPoller    = null;
+
+  // Sync lastLogCount to current server log length on page load (skip old logs)
+  fetch('/logs').then(r => r.json()).then(d => { lastLogCount = d.lines.length; });
+
+  // ── UI updates ─────────────────────────────────────────────────────────────
+  function updateStats(db, data) {
+    document.getElementById(`${db}-cpu-val`).textContent  = data.cpu + '%';
+    document.getElementById(`${db}-mem-val`).textContent  = data.mem_mb + ' MB';
+    document.getElementById(`${db}-cpu-bar`).style.width  = Math.min(data.cpu, 100) + '%';
+    document.getElementById(`${db}-mem-bar`).style.width  = Math.min(data.mem_pct, 100) + '%';
+  }
+
+  function updateBadge(db) {
+    const s = st[db];
+    const el = document.getElementById(`${db}-badge`);
+    if (db === 'mssql' && !s.ready) {
+      el.textContent = '⏳ Connecting...'; el.className = 'badge badge-wait';
+    } else {
+      el.textContent = '● ' + (s.indexApplied ? 'ON' : 'OFF');
+      el.className   = 'badge ' + (s.indexApplied ? 'badge-on' : 'badge-off');
+    }
+    // Update run button label
+    const pg_lbl    = st.pg.indexApplied    ? 'After' : 'Before';
+    const mssql_lbl = st.mssql.indexApplied ? 'After' : 'Before';
+    document.getElementById('btn-run').textContent =
+      `▶ Run Test  (PG: ${pg_lbl} | MSSQL: ${mssql_lbl})`;
+  }
+
+  function syncButtons() {
+    const disabled = st.running;
+    ['btn-run','btn-inject','btn-apply','btn-remove'].forEach(id => {
+      document.getElementById(id).disabled = disabled;
+    });
+    document.getElementById('running-indicator').style.display = st.running ? 'inline' : 'none';
+    document.getElementById('cursor').style.display = st.running ? 'inline-block' : 'none';
+  }
+
+  // ── Log rendering ──────────────────────────────────────────────────────────
+  function appendLog(line) {
+    const term   = document.getElementById('terminal');
+    const cursor = document.getElementById('cursor');
+    if (line === 'SEP') {
+      const div = document.createElement('div');
+      div.className = 'log-sep'; div.innerHTML = '&nbsp;';
+      term.insertBefore(div, cursor);
+    } else {
+      const div = document.createElement('div');
+      const isPG    = line.startsWith('[PG]');
+      const isMSSQL = line.startsWith('[MSSQL]');
+      div.className   = 'log-line' + (isPG ? ' pg' : isMSSQL ? ' mssql' : line.startsWith('ERROR') ? ' error' : '');
+      div.textContent = '> ' + line;
+      term.insertBefore(div, cursor);
+    }
+    term.scrollTop = term.scrollHeight;
+  }
+
+  // ── Chart.js — histogram (Y=frequency, X=latency) per run + average ─────────
+  const CHARTS_CFG = [
+    { key: "PG Before Index",    id: "chart-pg-before",    color: "#e74c3c", rgba: "rgba(231,76,60," },
+    { key: "PG After Index",     id: "chart-pg-after",     color: "#27ae60", rgba: "rgba(39,174,96," },
+    { key: "MSSQL Before Index", id: "chart-mssql-before", color: "#c0392b", rgba: "rgba(192,57,43," },
+    { key: "MSSQL After Index",  id: "chart-mssql-after",  color: "#2980b9", rgba: "rgba(41,128,185," },
+  ];
+  const chartInstances = {};
+  const NUM_BINS = 28;
+
+  const noDataPlugin = {
+    id: 'noData',
+    afterDraw(chart) {
+      const hasData = chart.data.datasets.some(d => d.data && d.data.some(v => v > 0));
+      if (!hasData) {
+        const { ctx, chartArea: ca } = chart;
+        if (!ca) return;
+        ctx.save();
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.font = '13px sans-serif'; ctx.fillStyle = '#bbb';
+        ctx.fillText('No data — run a test first', (ca.left + ca.right) / 2, (ca.top + ca.bottom) / 2);
+        ctx.restore();
+      }
+    }
+  };
+
+  function buildHistogram(runs, cfg) {
+    const allLat = runs.flatMap(r => r.latencies || []);
+    if (allLat.length === 0) return { labels: [], datasets: [], annotations: {} };
+
+    const minL = Math.min(...allLat);
+    const maxL = Math.max(...allLat);
+    const binW  = (maxL - minL) / NUM_BINS || 1;
+
+    // Shared bin labels (centre of each bin)
+    const labels = Array.from({length: NUM_BINS}, (_, i) =>
+      (minL + (i + 0.5) * binW).toFixed(1)
+    );
+
+    const toBins = (latencies) => {
+      const c = new Array(NUM_BINS).fill(0);
+      latencies.forEach(v => {
+        const idx = Math.min(Math.floor((v - minL) / binW), NUM_BINS - 1);
+        c[idx]++;
+      });
+      return c;
+    };
+
+    const datasets = runs.map((run, i) => ({
+      label: `Run ${i + 1}`,
+      data: toBins(run.latencies || []),
+      borderColor: runs.length === 1 ? cfg.color : cfg.rgba + '0.55)',
+      backgroundColor: runs.length === 1 ? cfg.rgba + '0.22)' : 'transparent',
+      borderDash: runs.length > 1 ? [5, 4] : [],
+      borderWidth: runs.length === 1 ? 2 : 1.5,
+      pointRadius: 0,
+      stepped: 'before',
+      fill: runs.length === 1 ? { target: 'origin' } : false,
+      tension: 0,
+    }));
+
+    // Average distribution across all runs
+    if (runs.length > 1) {
+      const avgCounts = new Array(NUM_BINS).fill(0);
+      runs.forEach(run => {
+        toBins(run.latencies || []).forEach((c, i) => { avgCounts[i] += c / runs.length; });
+      });
+      datasets.push({
+        label: `Avg (${runs.length} runs)`,
+        data: avgCounts,
+        borderColor: cfg.color,
+        backgroundColor: cfg.rgba + '0.15)',
+        borderDash: [],
+        borderWidth: 3,
+        pointRadius: 0,
+        stepped: 'before',
+        fill: { target: 'origin' },
+        tension: 0,
+      });
+    }
+
+    // Vertical mean line via annotation
+    const overallMean = allLat.reduce((s, v) => s + v, 0) / allLat.length;
+    const meanBinIdx  = Math.min(Math.floor((overallMean - minL) / binW), NUM_BINS - 1);
+    const annotations = {
+      meanLine: {
+        type: 'line',
+        xMin: meanBinIdx,
+        xMax: meanBinIdx,
+        borderColor: '#2c3e50',
+        borderWidth: 2,
+        borderDash: [6, 4],
+        label: {
+          display: true,
+          content: `Mean: ${overallMean.toFixed(1)} ms`,
+          position: '10%',
+          backgroundColor: 'rgba(44,62,80,0.85)',
+          color: 'white',
+          font: { size: 10 },
+          padding: { x: 5, y: 3 },
+        },
+      },
+    };
+
+    return { labels, datasets, annotations };
+  }
+
+  async function renderCharts() {
+    let metrics;
+    try { metrics = await (await fetch('/metrics')).json(); } catch(e) { return; }
+    let totalRuns = 0;
+    CHARTS_CFG.forEach(cfg => {
+      const runs = metrics[cfg.key] || [];
+      totalRuns = Math.max(totalRuns, runs.length);
+      const canvas = document.getElementById(cfg.id);
+      if (!canvas) return;
+      if (chartInstances[cfg.id]) { chartInstances[cfg.id].destroy(); delete chartInstances[cfg.id]; }
+
+      const { labels, datasets, annotations } = buildHistogram(runs, cfg);
+
+      chartInstances[cfg.id] = new Chart(canvas, {
+        type: 'line',
+        plugins: [noDataPlugin],
+        data: { labels: labels.length ? labels : Array(NUM_BINS).fill(''), datasets },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: {
+            legend: { display: runs.length > 0, labels: { boxWidth: 10, font: { size: 10 }, color: '#555' } },
+            annotation: { annotations },
+          },
+          scales: {
+            x: {
+              title: { display: true, text: 'Latency (ms)', font: { size: 10 } },
+              grid: { color: '#eee' },
+              ticks: { font: { size: 9 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 8 },
+            },
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: 'Frequency', font: { size: 10 } },
+              grid: { color: '#eee' },
+              ticks: { font: { size: 10 } },
+            },
+          },
+        },
+      });
+    });
+    const infoEl = document.getElementById('chart-run-info');
+    if (infoEl) infoEl.textContent = totalRuns > 0 ? `— ${totalRuns} run(s) recorded` : '';
+  }
+
+  // ── Polling ────────────────────────────────────────────────────────────────
+  async function fetchLogs() {
+    try {
+      const data     = await (await fetch('/logs')).json();
+      const newLines = data.lines.slice(lastLogCount).filter(l => l !== '__DONE__');
+      newLines.forEach(appendLog);
+      lastLogCount = data.lines.length;
+      if (data.lines.slice(lastLogCount - newLines.length - 1).includes('__DONE__') ||
+          data.lines[data.lines.length - 1] === '__DONE__') {
+        clearInterval(logPoller); logPoller = null;
+        st.running = false; syncButtons();
+        await refreshStatus(); renderCharts();
+      }
+    } catch (e) {}
+  }
+
+  async function refreshStatus() {
+    try {
+      const data = await (await fetch('/status')).json();
+      st.pg.indexApplied    = data.pg_index_applied;
+      st.mssql.indexApplied = data.mssql_index_applied;
+      st.mssql.ready        = data.mssql_ready;
+      st.running            = data.running;
+      document.getElementById('pg-count').textContent    = data.pg_row_count;
+      document.getElementById('mssql-count').textContent = data.mssql_row_count;
+      updateBadge('pg'); updateBadge('mssql'); syncButtons();
+    } catch (e) {}
+  }
+
+  async function refreshDockerStats() {
+    try {
+      const data = await (await fetch('/docker_stats')).json();
+      updateStats('pg', data.pg); updateStats('mssql', data.mssql);
+    } catch (e) {}
+  }
+
+  setInterval(refreshStatus,      3000);
+  setInterval(refreshDockerStats, 2000);
+
+  // ── Button handlers ────────────────────────────────────────────────────────
+  async function startOperation(url) {
+    st.running = true; syncButtons();
+    await fetch(url);
+    if (logPoller) clearInterval(logPoller);
+    logPoller = setInterval(fetchLogs, 400);
+  }
+
+  function runTest()      { startOperation('/run_test?threads=' + document.getElementById('threads').value); }
+  function injectHistory(){ startOperation('/inject_history'); }
+  function applyIndex()   { startOperation('/apply_index'); }
+  function removeIndex()  { startOperation('/remove_index'); }
+
+  // ── Schema diagram ──────────────────────────────────────────────────────
+  async function refreshSchema() {
+    const btn = document.getElementById('btn-schema');
+    btn.textContent = '⏳ Generating...'; btn.disabled = true;
+    try {
+      await fetch('/refresh_schema');
+      const img = document.getElementById('schema-img');
+      img.src = '/static/schema_diagram.png?v=' + Date.now();
+      img.style.display = 'block';
+      img.onload = () => { document.getElementById('no-schema-msg').style.display = 'none'; };
+    } finally {
+      btn.textContent = '&#8635; Refresh Schema'; btn.disabled = false;
+    }
+  }
+
+  // Auto-load existing schema diagram on page load
+  (function() {
+    const img = document.getElementById('schema-img');
+    img.onload  = () => { img.style.display = 'block'; document.getElementById('no-schema-msg').style.display = 'none'; };
+    img.onerror = () => { img.style.display = 'none'; };
+    img.src = '/static/schema_diagram.png?v=' + Date.now();
+  })();
+
+  // Initial render
+  updateBadge('pg'); updateBadge('mssql'); syncButtons();
+  refreshDockerStats();
+  renderCharts();
+</script>
+</body>
+</html>
+
+
+

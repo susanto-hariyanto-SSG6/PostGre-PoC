@@ -1,0 +1,6 @@
+flask
+psycopg2-binary
+pymssql
+matplotlib
+numpy
+docker
