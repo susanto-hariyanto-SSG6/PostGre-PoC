@@ -269,16 +269,16 @@ def refresh_schema():
 
 def _mssql_startup_init():
     global mssql_ready
-    for attempt in range(12):
+    for attempt in range(6):
         try:
             init_mssql_schema(log_fn=print)
             mssql_ready = True
             print("[startup] MSSQL schema ready.")
             return
         except Exception as e:
-            print(f"[startup] MSSQL init attempt {attempt + 1}/12 failed: {e}")
-            time.sleep(10)
-    print("[startup] MSSQL init gave up after 12 attempts.")
+            print(f"[startup] MSSQL init attempt {attempt + 1}/6 failed: {e}")
+            time.sleep(5)
+    print("[startup] MSSQL init gave up after 6 attempts.")
 
 
 threading.Thread(target=_mssql_startup_init, daemon=True).start()
