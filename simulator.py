@@ -97,16 +97,20 @@ def _pg_clock_in(student_id, lat_list):
         cur  = conn.cursor()
         # Simulate login screen: aggregate student + class info + attendance history
         cur.execute("""
-            SELECT s.id, s.name, c.name AS class_name, COUNT(a.id) AS total_checkins
+            SELECT s.id, s.name, s.class_id, c.name AS class_name, COUNT(a.id) AS total_checkins
             FROM students s
             JOIN classes c ON s.class_id = c.id
             LEFT JOIN attendance a ON a.student_id = s.id
             WHERE s.id = %s
-            GROUP BY s.id, s.name, c.name
+            GROUP BY s.id, s.name, s.class_id, c.name
         """, (student_id,))
-        cur.fetchone()
-        # Record clock-in
-        cur.execute("INSERT INTO attendance (student_id, status) VALUES (%s, 'present')", (student_id,))
+        row = cur.fetchone()
+        class_id = row[2] if row else None
+        # Record clock-in with class reference
+        cur.execute(
+            "INSERT INTO attendance (student_id, class_id, status) VALUES (%s, %s, 'present')",
+            (student_id, class_id)
+        )
         conn.commit(); cur.close(); conn.close()
         lat_list.append((time.perf_counter() - t) * 1000)
     except Exception:
@@ -119,9 +123,13 @@ def inject_crowded_data(count=5000, log_fn=None):
     conn = psycopg2.connect(PG_CONFIG)
     cur  = conn.cursor()
     cur.execute(f"""
-        INSERT INTO attendance (student_id, status, clock_in)
-        SELECT (random()*299)+1, 'present', now() - (random() * interval '30 days')
-        FROM generate_series(1, {count});
+        INSERT INTO attendance (student_id, class_id, status, clock_in)
+        SELECT s.id, s.class_id, 'present', now() - (random() * interval '30 days')
+        FROM (
+            SELECT ((random() * 299) + 1)::int AS sid
+            FROM generate_series(1, {count})
+        ) t
+        JOIN students s ON s.id = t.sid;
     """)
     conn.commit(); cur.close(); conn.close()
     if log_fn:
@@ -179,6 +187,7 @@ def init_mssql_schema(log_fn=None):
         CREATE TABLE attendance (
             id         INT IDENTITY(1,1) PRIMARY KEY,
             student_id INT REFERENCES students(id),
+            class_id   INT REFERENCES classes(id),
             clock_in   DATETIME2 DEFAULT GETDATE(),
             clock_out  DATETIME2,
             status     NVARCHAR(20)
@@ -230,16 +239,20 @@ def _mssql_clock_in(student_id, lat_list):
         cur  = conn.cursor()
         # Simulate login screen: aggregate student + class info + attendance history
         cur.execute("""
-            SELECT s.id, s.name, c.name AS class_name, COUNT(a.id) AS total_checkins
+            SELECT s.id, s.name, s.class_id, c.name AS class_name, COUNT(a.id) AS total_checkins
             FROM students s
             JOIN classes c ON s.class_id = c.id
             LEFT JOIN attendance a ON a.student_id = s.id
             WHERE s.id = %s
-            GROUP BY s.id, s.name, c.name
+            GROUP BY s.id, s.name, s.class_id, c.name
         """, (student_id,))
-        cur.fetchone()
-        # Record clock-in
-        cur.execute("INSERT INTO attendance (student_id, status) VALUES (%s, 'present')", (student_id,))
+        row = cur.fetchone()
+        class_id = row[2] if row else None
+        # Record clock-in with class reference
+        cur.execute(
+            "INSERT INTO attendance (student_id, class_id, status) VALUES (%s, %s, 'present')",
+            (student_id, class_id)
+        )
         conn.commit()
         lat_list.append((time.perf_counter() - t) * 1000)
     except Exception:
@@ -259,13 +272,18 @@ def inject_crowded_data_mssql(count=5000, log_fn=None):
         WITH nums AS (
             SELECT TOP ({count}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
             FROM sys.all_objects a CROSS JOIN sys.all_objects b
+        ),
+        rand_students AS (
+            SELECT (ABS(CHECKSUM(NEWID())) % 300) + 1 AS sid FROM nums
         )
-        INSERT INTO attendance (student_id, status, clock_in)
+        INSERT INTO attendance (student_id, class_id, status, clock_in)
         SELECT
-            (ABS(CHECKSUM(NEWID())) % 300) + 1,
+            s.id,
+            s.class_id,
             'present',
             DATEADD(day, -(ABS(CHECKSUM(NEWID())) % 30), GETDATE())
-        FROM nums
+        FROM rand_students r
+        JOIN students s ON s.id = r.sid
     """)
     conn.commit(); cur.close(); conn.close()
     if log_fn:
@@ -380,6 +398,7 @@ def generate_schema_diagram(pg_counts, mssql_counts, log_fn=None):
         {"name": "attendance",
          "cols": [("id", "SERIAL / INT IDENTITY", True, False),
                   ("student_id", "INT  →  students.id", False, True),
+                  ("class_id", "INT  →  classes.id", False, True),
                   ("clock_in", "TIMESTAMP", False, False),
                   ("clock_out", "TIMESTAMP", False, False),
                   ("status", "VARCHAR(20)", False, False)]},
@@ -387,6 +406,7 @@ def generate_schema_diagram(pg_counts, mssql_counts, log_fn=None):
     RELATIONS = [
         ("students",   "class_id",   "classes",  "id"),
         ("attendance", "student_id", "students", "id"),
+        ("attendance", "class_id",   "classes",  "id"),
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(17, 11))

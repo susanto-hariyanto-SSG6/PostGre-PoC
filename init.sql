@@ -12,6 +12,7 @@ CREATE TABLE students (
 CREATE TABLE attendance (
     id SERIAL PRIMARY KEY,
     student_id INTEGER REFERENCES students(id),
+    class_id INTEGER REFERENCES classes(id),
     clock_in TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     clock_out TIMESTAMP,
     status VARCHAR(20) -- e.g., 'present', 'late'
