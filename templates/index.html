@@ -292,6 +292,11 @@
     const minL = Math.min(...allLat);
     const maxL = Math.max(...allLat);
     const binW  = (maxL - minL) / NUM_BINS || 1;
+    const totalSuccess = runs.reduce((s, r) => s + (r.success ?? r.latencies?.length ?? 0), 0);
+    const totalErrors  = runs.reduce((s, r) => s + (r.errors ?? 0), 0);
+    const errorRate    = totalSuccess + totalErrors > 0
+        ? ((totalErrors / (totalSuccess + totalErrors)) * 100).toFixed(1)
+        : null;
 
     // Shared bin labels (centre of each bin)
     const labels = Array.from({length: NUM_BINS}, (_, i) =>
@@ -362,6 +367,19 @@
         },
       },
     };
+    if (errorRate !== null) {
+        annotations.errorBadge = {
+            type: 'label',
+            xValue: NUM_BINS - 1,   // pin to right edge
+            yValue: 'max',           // top of chart
+            content: [`Errors: ${totalErrors}`, `Rate: ${errorRate}%`],
+            backgroundColor: totalErrors > 0 ? 'rgba(231,76,60,0.85)' : 'rgba(39,174,96,0.85)',
+            color: 'white',
+            font: { size: 10, weight: 'bold' },
+            padding: { x: 6, y: 4 },
+            position: { x: 'end', y: 'start' },
+        };
+    }
 
     return { labels, datasets, annotations };
   }

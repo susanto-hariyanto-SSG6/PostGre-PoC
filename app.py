@@ -125,7 +125,7 @@ def index():
 def run_test():
     if test_running:
         return jsonify({"status": "busy"})
-    threads = int(request.args.get("threads", 50))
+    threads = int(request.args.get("threads", 150))
 
     def task():
         pg_label    = "PG After Index"    if pg_index_applied    else "PG Before Index"

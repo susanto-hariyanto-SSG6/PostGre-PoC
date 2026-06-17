@@ -6,6 +6,9 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mp
+import matplotlib.patheffects as pe
+from matplotlib.patches import FancyBboxPatch
 from concurrent.futures import ThreadPoolExecutor
 
 # --- Connection config ---
@@ -76,21 +79,24 @@ def run_traffic_load(phase_key, total_students=300, threads=50, log_fn=None):
     if log_fn:
         log_fn(f"[PG] '{phase_key}' — {total_students} students, {threads} threads...")
     run_lat = []
+    error_list = []
     student_ids = list(range(1, total_students + 1))
     start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=threads) as ex:
-        ex.map(lambda s: _pg_clock_in(s, run_lat), student_ids)
+        ex.map(lambda s: _pg_clock_in(s, run_lat, error_list), student_ids)
     elapsed = time.perf_counter() - start
+    success = len(run_lat)
+    errors  = len(error_list)
     if run_lat:
         mean = np.mean(run_lat)
         p95  = np.percentile(run_lat, 95)
         mx   = np.max(run_lat)
-        run_history[phase_key].append({"mean": round(mean, 2), "p95": round(p95, 2), "max": round(mx, 2), "latencies": run_lat})
+        run_history[phase_key].append({"mean": round(mean, 2), "p95": round(p95, 2), "max": round(mx, 2), "success": success, "errors": errors, "latencies": run_lat})
         if log_fn:
-            log_fn(f"[PG] Done in {elapsed:.2f}s — Mean: {mean:.2f}ms | P95: {p95:.2f}ms | Max: {mx:.2f}ms")
+            log_fn(f"[PG] Done in {elapsed:.2f}s — Mean: {mean:.2f}ms | P95: {p95:.2f}ms | Max: {mx:.2f}ms | Success: {success} | Errors: {errors}")
 
 
-def _pg_clock_in(student_id, lat_list):
+def _pg_clock_in(student_id, lat_list, error_list):
     t = time.perf_counter()
     try:
         conn = psycopg2.connect(PG_CONFIG)
@@ -113,8 +119,8 @@ def _pg_clock_in(student_id, lat_list):
         )
         conn.commit(); cur.close(); conn.close()
         lat_list.append((time.perf_counter() - t) * 1000)
-    except Exception:
-        pass
+    except Exception as e:
+        error_list.append(str(e)) 
 
 
 def inject_crowded_data(count=5000, log_fn=None):
@@ -219,19 +225,22 @@ def run_traffic_load_mssql(phase_key, total_students=300, threads=50, log_fn=Non
     run_lat = []
     student_ids = list(range(1, total_students + 1))
     start = time.perf_counter()
+    error_list = []
     with ThreadPoolExecutor(max_workers=threads) as ex:
-        ex.map(lambda s: _mssql_clock_in(s, run_lat), student_ids)
+        ex.map(lambda s: _mssql_clock_in(s, run_lat, error_list), student_ids)
     elapsed = time.perf_counter() - start
     if run_lat:
         mean = np.mean(run_lat)
         p95  = np.percentile(run_lat, 95)
         mx   = np.max(run_lat)
-        run_history[phase_key].append({"mean": round(mean, 2), "p95": round(p95, 2), "max": round(mx, 2), "latencies": run_lat})
+        success = len(run_lat)
+        errors  = len(error_list)
+        run_history[phase_key].append({"mean": round(mean, 2), "p95": round(p95, 2), "max": round(mx, 2), "success": success, "errors": errors, "latencies": run_lat})
         if log_fn:
-            log_fn(f"[MSSQL] Done in {elapsed:.2f}s — Mean: {mean:.2f}ms | P95: {p95:.2f}ms | Max: {mx:.2f}ms")
+            log_fn(f"[MSSQL] Done in {elapsed:.2f}s — Mean: {mean:.2f}ms | P95: {p95:.2f}ms | Max: {mx:.2f}ms | Success: {success} | Errors: {errors}")
 
 
-def _mssql_clock_in(student_id, lat_list):
+def _mssql_clock_in(student_id, lat_list, error_list):
     t = time.perf_counter()
     conn = None
     try:
@@ -255,8 +264,8 @@ def _mssql_clock_in(student_id, lat_list):
         )
         conn.commit()
         lat_list.append((time.perf_counter() - t) * 1000)
-    except Exception:
-        pass
+    except Exception as e:
+        error_list.append(str(e))
     finally:
         if conn:
             try: conn.close()
@@ -356,6 +365,7 @@ if __name__ == "__main__":
 
 # ── Schema diagram ────────────────────────────────────────────────────────────
 
+
 def get_all_table_counts_pg():
     result = {"classes": 0, "students": 0, "attendance": 0}
     try:
@@ -368,8 +378,8 @@ def get_all_table_counts_pg():
     except Exception:
         pass
     return result
-
-
+ 
+ 
 def get_all_table_counts_mssql():
     result = {"classes": 0, "students": 0, "attendance": 0}
     try:
@@ -382,172 +392,308 @@ def get_all_table_counts_mssql():
     except Exception:
         pass
     return result
-
-
+ 
+ 
+# ── Palette (module-level so _rounded_rect can reference them) ─────────────────
+_BG        = "#F7F8FA"
+_CARD      = "#FFFFFF"
+_HEADER_PK = "#C0392B"
+_HEADER_FK = "#2980B9"
+_BORDER    = "#D0D5DD"
+_TEXT_MAIN = "#1A1D23"
+_TEXT_MUTE = "#6B7280"
+_TEXT_TYPE = "#9CA3AF"
+_ACCENT_PG = "#336791"
+_ACCENT_MS = "#CC2927"
+_ROW_ALT   = "#F3F6FA"
+_ARROW_CLR = "#E67E22"
+ 
+SCHEMA = [
+    {
+        "name": "classes",
+        "cols": [
+            ("id",   "SERIAL / INT IDENTITY", True,  False),
+            ("name", "VARCHAR(50)",            False, False),
+        ],
+    },
+    {
+        "name": "students",
+        "cols": [
+            ("id",       "SERIAL / INT IDENTITY", True,  False),
+            ("name",     "VARCHAR(100)",           False, False),
+            ("class_id", "INT -> classes.id",      False, True),
+        ],
+    },
+    {
+        "name": "attendance",
+        "cols": [
+            ("id",         "SERIAL / INT IDENTITY", True,  False),
+            ("student_id", "INT -> students.id",    False, True),
+            ("class_id",   "INT -> classes.id",     False, True),
+            ("clock_in",   "TIMESTAMP",              False, False),
+            ("clock_out",  "TIMESTAMP",              False, False),
+            ("status",     "VARCHAR(20)",            False, False),
+        ],
+    },
+]
+ 
+RELATIONS = [
+    ("students",   "class_id",   "classes",  "id"),
+    ("attendance", "student_id", "students", "id"),
+    ("attendance", "class_id",   "classes",  "id"),
+]
+ 
+ 
+def _rounded_rect(ax, x, y, w, h, radius=0.18, fc=_CARD, ec=_BORDER,
+                  lw=1.0, zorder=2, shadow=False):
+    if shadow:
+        ax.add_patch(FancyBboxPatch(
+            (x + 0.06, y - 0.07), w, h,
+            boxstyle=f"round,pad=0.04,rounding_size={radius}",
+            fc="#D0D5DD", ec="none", zorder=zorder - 1, alpha=0.55,
+        ))
+    ax.add_patch(FancyBboxPatch(
+        (x, y), w, h,
+        boxstyle=f"round,pad=0.04,rounding_size={radius}",
+        fc=fc, ec=ec, lw=lw, zorder=zorder,
+    ))
+ 
+ 
 def generate_schema_diagram(pg_counts, mssql_counts, log_fn=None):
-    import matplotlib.patches as mp
+    TW    = 5.2
+    RH    = 0.48
+    HH    = 0.60
+    FH    = 0.52
+    GAP_Y = 0.80   # vertical gap between classes & students (left col)
+    GAP_X = 2.20   # horizontal gap between left and right column
 
-    SCHEMA = [
-        {"name": "classes",
-         "cols": [("id", "SERIAL / INT IDENTITY", True, False),
-                  ("name", "VARCHAR(50)", False, False)]},
-        {"name": "students",
-         "cols": [("id", "SERIAL / INT IDENTITY", True, False),
-                  ("name", "VARCHAR(100)", False, False),
-                  ("class_id", "INT  →  classes.id", False, True)]},
-        {"name": "attendance",
-         "cols": [("id", "SERIAL / INT IDENTITY", True, False),
-                  ("student_id", "INT  →  students.id", False, True),
-                  ("class_id", "INT  →  classes.id", False, True),
-                  ("clock_in", "TIMESTAMP", False, False),
-                  ("clock_out", "TIMESTAMP", False, False),
-                  ("status", "VARCHAR(20)", False, False)]},
-    ]
-    RELATIONS = [
-        ("students",   "class_id",   "classes",  "id"),
-        ("attendance", "student_id", "students", "id"),
-        ("attendance", "class_id",   "classes",  "id"),
-    ]
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(16, 11))
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_BG)
+    ax.axis("off")
+    ax.set_xlim(0, 16)
+    ax.set_ylim(0, 11)
 
-    fig, axes = plt.subplots(1, 2, figsize=(17, 11))
-    fig.patch.set_facecolor("#f5f6fa")
-    fig.suptitle("Database Schema & Table Row Counts",
-                 fontsize=15, fontweight="bold", y=0.99, color="#2c3e50")
+    ax.text(8, 10.6, "Database Schema",
+            ha="center", va="center", fontsize=16, fontweight="bold", color=_TEXT_MAIN)
+    ax.text(8, 10.25, "Row counts:  PostgreSQL  |  SQL Server",
+            ha="center", va="center", fontsize=9, color=_TEXT_MUTE)
 
-    for ax, db_label, db_color, counts in [
-        (axes[0], "PostgreSQL 15",    "#336791", pg_counts),
-        (axes[1], "SQL Server 2022",  "#CC2927", mssql_counts),
-    ]:
-        ax.set_facecolor("#f5f6fa")
-        ax.axis("off")
+    # ── Fixed positions ───────────────────────────────────────────────────────
+    # Left column: classes (top) and students (below)
+    # Right column: attendance (vertically centred)
+    LEFT_X  = 1.0
+    RIGHT_X = LEFT_X + TW + GAP_X
 
-        TW  = 5.2   # table width
-        TX  = 0.5   # table left edge x
-        RH  = 0.46  # row height
-        HH  = 0.58  # header height
-        FH  = 0.40  # footer height
-        GAP = 1.1   # vertical gap between tables
+    def card_height(tbl):
+        return HH + len(tbl["cols"]) * RH + FH
 
-        # Compute table y positions top-down
-        y_cursor = 11.8
-        tbl_meta = {}
-        for tbl in SCHEMA:
-            h = HH + len(tbl["cols"]) * RH + FH
-            tbl_meta[tbl["name"]] = {
-                "y_top": y_cursor,
-                "y_bot": y_cursor - h,
-                "col_ys": {},
-            }
-            y_cursor = y_cursor - h - GAP
+    h_classes    = card_height(SCHEMA[0])
+    h_students   = card_height(SCHEMA[1])
+    h_attendance = card_height(SCHEMA[2])
 
-        ax.set_xlim(0, 7.0)
-        ax.set_ylim(y_cursor - 0.8, 13.2)
+    students_top  = 9.8
+    students_bot  = students_top - h_students
 
-        # DB title badge
-        ax.text(TX + TW / 2, 12.7, db_label,
-                ha="center", va="center", fontsize=13, fontweight="bold", color="white",
-                bbox=dict(boxstyle="round,pad=0.5", facecolor=db_color, edgecolor="none"))
+    # Classes now goes below students with a gap
+    classes_top   = students_bot - GAP_Y
+    classes_bot   = classes_top - h_classes
 
-        for tbl in SCHEMA:
-            m = tbl_meta[tbl["name"]]
-            y_top, y_bot = m["y_top"], m["y_bot"]
-            body_h = y_top - y_bot - HH - FH
+    # Attendance: vertically centred alongside the two left tables
+    left_span_top = students_top
+    left_span_bot = classes_bot
+    att_mid       = (left_span_top + left_span_bot) / 2
+    att_top       = att_mid + h_attendance / 2
+    att_bot       = att_mid - h_attendance / 2
 
-            # Drop shadow
-            ax.add_patch(mp.FancyBboxPatch(
-                (TX + 0.08, y_bot - 0.08), TW, y_top - y_bot,
-                boxstyle="round,pad=0.05", fc="#c8c8c8", ec="none", zorder=1))
+    positions = {
+        "students":   (LEFT_X,  students_top, students_bot),
+        "classes":    (LEFT_X,  classes_top,  classes_bot),
+        "attendance": (RIGHT_X, att_top,      att_bot),
+    }
 
-            # Header
-            ax.add_patch(mp.FancyBboxPatch(
-                (TX, y_top - HH), TW, HH,
-                boxstyle="round,pad=0.05", fc=db_color, ec="none", zorder=2))
-            ax.text(TX + TW / 2, y_top - HH / 2, tbl["name"],
-                    ha="center", va="center", fontsize=11, fontweight="bold",
-                    color="white", zorder=3)
+    tbl_meta = {}
+    for tbl in SCHEMA:
+        tx, ty_top, ty_bot = positions[tbl["name"]]
+        tbl_meta[tbl["name"]] = {
+            "tx": tx, "ty_top": ty_top, "ty_bot": ty_bot, "col_ys": {},
+        }
 
-            # Body
-            ax.add_patch(mp.FancyBboxPatch(
-                (TX, y_bot + FH), TW, body_h,
-                boxstyle="round,pad=0.05", fc="white", ec=db_color, lw=1.5, zorder=2))
+    # ── Draw each table ───────────────────────────────────────────────────────
+    for tbl in SCHEMA:
+        m      = tbl_meta[tbl["name"]]
+        tx     = m["tx"]
+        ty_top = m["ty_top"]
+        ty_bot = m["ty_bot"]
+        total_h = ty_top - ty_bot
 
-            # Columns
-            y_cur = y_top - HH
-            for col_name, col_type, is_pk, is_fk in tbl["cols"]:
-                y_cur -= RH
-                cy = y_cur + RH / 2
-                m["col_ys"][col_name] = cy
+        # Shadow
+        ax.add_patch(FancyBboxPatch(
+            (tx + 0.07, ty_bot - 0.07), TW, total_h,
+            boxstyle="round,pad=0.04,rounding_size=0.20",
+            fc="#D0D5DD", ec="none", zorder=1, alpha=0.5,
+        ))
+        # Card
+        ax.add_patch(FancyBboxPatch(
+            (tx, ty_bot), TW, total_h,
+            boxstyle="round,pad=0.04,rounding_size=0.20",
+            fc=_CARD, ec=_BORDER, lw=1.2, zorder=2,
+        ))
 
-                # Row divider
-                ax.plot([TX + 0.06, TX + TW - 0.06], [y_cur + RH, y_cur + RH],
-                        color="#eeeeee", lw=0.7, zorder=3)
+        # Header
+        ax.add_patch(FancyBboxPatch(
+            (tx, ty_top - HH), TW, HH,
+            boxstyle="round,pad=0.04,rounding_size=0.20",
+            fc=_TEXT_MAIN, ec="none", zorder=3,
+        ))
+        ax.add_patch(plt.Rectangle(
+            (tx, ty_top - HH), TW, HH / 2,
+            fc=_TEXT_MAIN, ec="none", zorder=3,
+        ))
+        ax.text(tx + 0.45, ty_top - HH / 2, tbl["name"],
+                ha="left", va="center", fontsize=12, fontweight="bold",
+                color="white", zorder=4)
+        ax.text(tx + TW - 0.22, ty_top - HH / 2, "⊞",
+                ha="center", va="center", fontsize=10,
+                color="white", alpha=0.4, zorder=4)
 
-                # PK / FK badge
-                if is_pk:
-                    badge_fc, badge_txt = "#c0392b", "PK"
-                elif is_fk:
-                    badge_fc, badge_txt = "#2980b9", "FK"
-                else:
-                    badge_fc, badge_txt = None, None
+        # Columns
+        y_cur = ty_top - HH
+        for i, (col_name, col_type, is_pk, is_fk) in enumerate(tbl["cols"]):
+            y_cur -= RH
+            cy = y_cur + RH / 2
+            m["col_ys"][col_name] = cy
 
-                if badge_fc:
-                    ax.text(TX + 0.14, cy, badge_txt,
-                            ha="left", va="center", fontsize=7, color="white",
-                            fontweight="bold", zorder=3,
-                            bbox=dict(facecolor=badge_fc, edgecolor="none",
-                                      boxstyle="round,pad=0.2"))
+            if i % 2 == 1:
+                ax.add_patch(plt.Rectangle(
+                    (tx + 0.02, y_cur + 0.02), TW - 0.04, RH - 0.04,
+                    fc=_ROW_ALT, ec="none", zorder=2,
+                ))
+            ax.plot([tx + 0.1, tx + TW - 0.1], [y_cur + RH, y_cur + RH],
+                    color=_BORDER, lw=0.6, zorder=3)
 
-                col_color = "#c0392b" if is_pk else "#2980b9" if is_fk else "#333333"
-                ax.text(TX + 0.60, cy, col_name,
-                        ha="left", va="center", fontsize=9,
-                        color=col_color,
-                        fontweight="bold" if (is_pk or is_fk) else "normal", zorder=3)
-                ax.text(TX + TW - 0.12, cy, col_type,
-                        ha="right", va="center", fontsize=7.5, color="#999999", zorder=3)
+            if is_pk or is_fk:
+                badge_fc  = _HEADER_PK if is_pk else _HEADER_FK
+                badge_txt = "PK" if is_pk else "FK"
+                ax.text(tx + 0.22, cy, badge_txt,
+                        ha="center", va="center", fontsize=7.5,
+                        color="white", fontweight="bold", zorder=4,
+                        bbox=dict(facecolor=badge_fc, edgecolor="none",
+                                  boxstyle="round,pad=0.22"))
 
-            # Footer (row count)
-            cnt = counts.get(tbl["name"], 0)
-            ax.add_patch(mp.FancyBboxPatch(
-                (TX, y_bot), TW, FH,
-                boxstyle="round,pad=0.05", fc="#eef2f7", ec=db_color, lw=1.0, zorder=2))
-            ax.text(TX + TW / 2, y_bot + FH / 2,
-                    f"Total rows:  {cnt:,}",
-                    ha="center", va="center", fontsize=9.5,
-                    color=db_color, fontweight="bold", zorder=3)
+            col_color = _HEADER_PK if is_pk else (_HEADER_FK if is_fk else _TEXT_MAIN)
+            ax.text(tx + 0.55, cy, col_name,
+                    ha="left", va="center", fontsize=9.5, color=col_color,
+                    fontweight="bold" if (is_pk or is_fk) else "normal", zorder=4)
+            ax.text(tx + TW - 0.14, cy, col_type,
+                    ha="right", va="center", fontsize=7.8, color=_TEXT_TYPE, zorder=4)
 
-        # FK relationship arrows (right side, curved)
-        for (from_tbl, from_col, to_tbl, to_col) in RELATIONS:
-            fm  = tbl_meta[from_tbl]
-            tm  = tbl_meta[to_tbl]
-            fky = fm["col_ys"].get(from_col, fm["y_bot"])
-            pky = tm["col_ys"].get(to_col,   tm["y_top"])
-            ax_x = TX + TW + 0.08
+        # Footer
+        pg_cnt = pg_counts.get(tbl["name"], 0)
+        ms_cnt = mssql_counts.get(tbl["name"], 0)
 
+        ax.add_patch(FancyBboxPatch(
+            (tx, ty_bot), TW, FH,
+            boxstyle="round,pad=0.04,rounding_size=0.20",
+            fc="#F0F4FF", ec=_BORDER, lw=0.8, zorder=3,
+        ))
+        ax.add_patch(plt.Rectangle(
+            (tx, ty_bot + FH / 2), TW, FH / 2,
+            fc="#F0F4FF", ec="none", zorder=3,
+        ))
+        cx   = tx + TW / 2
+        cy_f = ty_bot + FH / 2
+        ax.text(cx - 0.15, cy_f, "Total rows:", ha="right", va="center",
+                fontsize=8.5, color=_TEXT_MUTE, zorder=4)
+        ax.text(cx + 0.08, cy_f, f"{pg_cnt:,}", ha="left", va="center",
+                fontsize=9.5, fontweight="bold", color=_ACCENT_PG, zorder=4,
+                bbox=dict(facecolor="#E8F0F9", edgecolor="none", boxstyle="round,pad=0.22"))
+        ax.text(cx + 0.82, cy_f, "|", ha="center", va="center",
+                fontsize=10, color=_TEXT_MUTE, zorder=4)
+        ax.text(cx + 1.05, cy_f, f"{ms_cnt:,}", ha="left", va="center",
+                fontsize=9.5, fontweight="bold", color=_ACCENT_MS, zorder=4,
+                bbox=dict(facecolor="#FDECEA", edgecolor="none", boxstyle="round,pad=0.22"))
+
+    # ── FK arrows: from right edge of left table → left edge of attendance ────
+    for (from_tbl, from_col, to_tbl, to_col) in RELATIONS:
+        fm  = tbl_meta[from_tbl]
+        tm  = tbl_meta[to_tbl]
+        fky = fm["col_ys"].get(from_col, (fm["ty_top"] + fm["ty_bot"]) / 2)
+        pky = tm["col_ys"].get(to_col,   (tm["ty_top"] + tm["ty_bot"]) / 2)
+
+        from_tx = fm["tx"]
+        to_tx   = tm["tx"]
+
+        same_col = abs(from_tx - to_tx) < 0.5
+
+        if same_col:
+            # Both tables on the left column: route arrow on the LEFT side
+            # Go left out of the FK col → elbow down/up → into PK row on the right
+            exit_x  = from_tx - 0.35          # just left of the table
+            enter_x = to_tx   - 0.35          # same x, left side
+            land_x  = to_tx + 0.02            # just touching left edge of target (no overlap)
+
+            path_x = [from_tx, exit_x,  enter_x, land_x]
+            path_y = [fky,     fky,      pky,     pky]
+            ax.plot(path_x, path_y,
+                    color=_ARROW_CLR, lw=1.8, zorder=5,
+                    solid_capstyle="round", solid_joinstyle="round")
+            # Arrowhead pointing right into the table
             ax.annotate("",
-                        xy=(ax_x, pky), xytext=(ax_x, fky),
-                        arrowprops=dict(
-                            arrowstyle="-|>",
-                            color="#e67e22", lw=2.2,
-                            connectionstyle="arc3,rad=-0.55",
-                            mutation_scale=14,
-                        ),
-                        zorder=5)
+                xy=(land_x + 0.01, pky), xytext=(land_x - 0.25, pky),
+                arrowprops=dict(arrowstyle="-|>", color=_ARROW_CLR,
+                                lw=1.8, mutation_scale=13),
+                zorder=6,
+            )
 
-        # Legend
-        ly = y_cursor - 0.35
-        for lx, lc, ll in [
-            (TX,       "#c0392b", "PK  Primary Key"),
-            (TX + 2.7, "#2980b9", "FK  Foreign Key"),
-        ]:
-            ax.add_patch(mp.FancyBboxPatch(
-                (lx, ly - 0.14), 0.28, 0.28,
-                boxstyle="round,pad=0.04", fc=lc, ec="none", zorder=3))
-            ax.text(lx + 0.38, ly, ll, va="center", fontsize=8, color="#555555", zorder=3)
+        else:
+            start_x = from_tx            
+            exit_x  = start_x - 0.15          # Step left into the gap
+            
+            # 2. End at the RIGHT edge of the target table (Class/Student)
+            land_x  = to_tx + TW              
+            enter_x = land_x + 0.15           # Step left towards the target's right edge
 
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+            # Route the path from right to left
+            path_x = [start_x, exit_x,  enter_x, land_x]
+            path_y = [fky,     fky,     pky,     pky]
+            
+            # Draw the connecting line
+            ax.plot(path_x, path_y,
+                    color=_ARROW_CLR, lw=1.8, zorder=5,
+                    solid_capstyle="round", solid_joinstyle="round")
+            
+            # 3. Arrowhead pointing LEFT (<-) into the right edge of the target table
+            ax.annotate("",
+                xy=(land_x, pky),             # Tip touches the right edge of Class/Student
+                xytext=(enter_x, pky),        # Tail comes from the right side of the tip
+                arrowprops=dict(arrowstyle="-|>", color=_ARROW_CLR,
+                                lw=1.8, mutation_scale=13),
+                zorder=6,
+            )
+
+    # ── Legend ────────────────────────────────────────────────────────────────
+    legend_items = [
+        (_HEADER_PK, "PK  Primary Key"),
+        (_HEADER_FK, "FK  Foreign Key"),
+        (_ACCENT_PG, "PG  PostgreSQL"),
+        (_ACCENT_MS, "SQL  SQL Server"),
+    ]
+    lx = 1.8
+    for lc, ll in legend_items:
+        ax.add_patch(FancyBboxPatch(
+            (lx, 0.28), 0.26, 0.26,
+            boxstyle="round,pad=0.03", fc=lc, ec="none", zorder=3,
+        ))
+        ax.text(lx + 0.38, 0.41, ll, va="center",
+                fontsize=9, color=_TEXT_MUTE, zorder=3)
+        lx += 3.2
+
+    plt.tight_layout(pad=0.4)
     os.makedirs("static", exist_ok=True)
-    plt.savefig("static/schema_diagram.png", dpi=100,
-                bbox_inches="tight", facecolor="#f5f6fa")
+    out_path = "static/schema_diagram.png"
+    plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor=_BG)
     plt.close()
     if log_fn:
-        log_fn("Schema diagram saved to static/schema_diagram.png")
+        log_fn(f"Schema diagram saved to {out_path}")
